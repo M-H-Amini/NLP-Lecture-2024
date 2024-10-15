@@ -2,9 +2,12 @@ import torch
 from torch.utils.data import Dataset
 
 class MHDataset(Dataset):
-    def __init__(self, filename, train=True, train_ratio=0.8, window_size=5, step_size=1):
-        self.txt_file = open(filename, 'r').read() 
+    def __init__(self, filename, train=True, train_ratio=0.8, window_size=5, step_size=1, lowercase=True):
+        self.txt_file = open(filename, 'r').read()
+        if lowercase:
+            self.txt_file = self.txt_file.lower()
         file_len = len(self.txt_file)
+        print(f'File length: {file_len}')
         if train:
             self.txt_file = self.txt_file[:int(file_len*train_ratio)]
         else:
@@ -12,10 +15,12 @@ class MHDataset(Dataset):
         self.window_size = window_size
         self.step_size = step_size
         self.vocab = list(sorted(set(self.txt_file)))
-        self.indices = list(range(0, file_len, self.step_size))  ##  Indices of beginning of each window
-        ##  Dealing with the last window
-        if len(self.txt_file) - self.indices[-1] < self.window_size:
-            self.indices.pop()
+        self.vocab_size = len(self.vocab)
+        # self.indices = list(range(0, file_len, self.step_size))  ##  Indices of beginning of each window
+        self.indices = [i for i in range(0, len(self.txt_file) - self.window_size - 1, self.step_size)]
+
+        
+        
 
     def __len__(self):
         return len(self.indices)
@@ -32,5 +37,5 @@ class MHDataset(Dataset):
         return self.vocab[idx]
 
 if __name__ == "__main__":
-    dataset = MHDataset('HP1.txt', train=True, window_size=10, step_size=1)
-    
+    dataset = MHDataset('HP1.txt', train=True, train_ratio=.8, window_size=50, step_size=25)
+    print(len(dataset))
