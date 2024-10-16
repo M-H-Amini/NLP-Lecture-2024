@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 
 class MHDataset(Dataset):
-    def __init__(self, filename, train=True, train_ratio=0.8, window_size=5, step_size=1, lowercase=True):
+    def __init__(self, filename, train=True, train_ratio=0.8, window_size=5, step_size=1, lowercase=False):
         self.txt_file = open(filename, 'r').read()
         if lowercase:
             self.txt_file = self.txt_file.lower()
@@ -37,5 +37,6 @@ class MHDataset(Dataset):
         return self.vocab[idx]
 
 if __name__ == "__main__":
-    dataset = MHDataset('HP1.txt', train=True, train_ratio=.8, window_size=50, step_size=25)
+    dataset = MHDataset('HP1.txt', train=True, train_ratio=.8, window_size=5, step_size=1)
     print(len(dataset))
+    print(dataset[0])
