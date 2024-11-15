@@ -1,7 +1,7 @@
 #########################################################################################
 ##                                                                                     ##
 ##                                Mohammad Hossein Amini                               ##
-##                                      Title: MLP                                     ##
+##                                   Title: No Context                                 ##
 ##                                   Date: 2024/10/18                                  ##
 ##                                                                                     ##
 #########################################################################################
@@ -16,31 +16,15 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from mh_utils import train, encode_text, decode_text, generate_text
 
-class MHHidden(nn.Module):
-    def __init__(self, input_dim=512):
-        super(MHHidden, self).__init__()
-        self.fc = nn.Linear(input_dim, input_dim)
-        
-    def forward(self, x):
-        return F.relu(self.fc(x))
-
 class MHLLM(nn.Module):
-    def __init__(self, input_dim=500, n_layers=1, vocab_size=100, context_len=5):
+    def __init__(self, vocab_size=100):
         super(MHLLM, self).__init__()
-        self.input_dim = input_dim
-        self.n_layers = n_layers
         self.vocab_size = vocab_size
-        self.context_len = context_len
-        self.embedding = nn.Embedding(vocab_size, input_dim)
-        self.hidden = nn.Sequential(*[MHHidden(input_dim) for _ in range(n_layers)])
-        self.fc = nn.Linear(input_dim * context_len, vocab_size)
+        self.embedding = nn.Embedding(vocab_size, 1)
         
     def forward(self, x, y=None):
-        B, T = x.shape
-        x = self.embedding(x)  ##  (B, T) -> (B, T, C)
-        x = self.hidden(x)  ##  (B, T, C)
-        x = x.view(B, -1)  ##  (B, T, C) -> (B, T*C)
-        x = self.fc(x)  ##  (B, T*C) -> (B, V)
+        B, T = x.shape  ##  x is redundant here, but we keep it for compatibility with other models
+        x = self.embedding(torch.tensor([[c for c in range(self.vocab_size)] for _ in range(B)]).to(x.device))[:, :, 0]  ##  (B, V)
         loss = None
         if y is not None:
             loss = F.cross_entropy(x, y[:, -1])
@@ -50,10 +34,6 @@ class MHLLM(nn.Module):
         _, T = x_init.shape
         x = x_init  ##  (1, T)
         resp = x.squeeze(0).tolist()
-        if T > self.context_len:
-            x = x[:, -self.context_len:]  ##  (1, T) -> (1, context_len)
-        if T < self.context_len:
-            x = torch.cat([torch.tensor([2] * (self.context_len - T)).unsqueeze(0), x], dim=1)  ##  (1, T) -> (1, context_len)
         for _ in range(n):  
             xx, __ = self.forward(x)  ##  (1, T) -> (1, V)
             xx = xx[0]  ##  (1, V) -> (V,)
@@ -61,16 +41,13 @@ class MHLLM(nn.Module):
                 xx = torch.multinomial(F.softmax(xx, dim=-1), 1)  ##  (V,) -> (1,)
             else:
                 xx = xx.argmax().unsqueeze(0)  ##  (V,) -> (1,)
-            x = torch.cat([x, xx.unsqueeze(0)], dim=1)[:, -self.context_len:]
+            x = torch.cat([x, xx.unsqueeze(0)], dim=1)
             resp.append(xx.item())
         return torch.tensor(resp)
     
     def save(self, filepath):
         checkpoint = {
-            'input_dim': self.input_dim,
-            'n_layers': self.n_layers,
             'vocab_size': self.vocab_size,
-            'context_len': self.context_len,
             'state_dict': self.state_dict(),
         }
         torch.save(checkpoint, filepath)
@@ -81,10 +58,7 @@ class MHLLM(nn.Module):
             device = torch.device('cpu')
         checkpoint = torch.load(filepath, map_location=device)
         model = cls(
-            input_dim=checkpoint['input_dim'],
-            n_layers=checkpoint['n_layers'],
             vocab_size=checkpoint['vocab_size'],
-            context_len=checkpoint['context_len']
         )
         model.load_state_dict(checkpoint['state_dict'])
         return model.to(device)
@@ -92,22 +66,22 @@ class MHLLM(nn.Module):
 
     
 if __name__ == "__main__":
-    context_len = 1
+    context_len = 30
     input_dim = 512
-    n_layers = 1
+    n_layers = 6
     epochs = 10
     batch_size = 512
     eval_steps = 100
-    lr = 1e-3
+    lr = 1e-2
     n_generated = 100
-    model_name = 'attn_mlp_context_1'
+    model_name = 'attn_no_context'
     init_text = 'Harry Potter'
     books = ['HP1.txt', 'HP2.txt', 'HP3.txt']
 
-    ds_train = MHDataset(books, train=True, window_size=context_len, step_size=1)
+    ds_train = MHDataset(books, train=True, window_size=context_len, step_size=5)
     ds_val = MHDataset(books, train=False, window_size=context_len, step_size=context_len)
     
-    model = MHLLM(input_dim=input_dim, vocab_size=ds_train.vocab_size, context_len=context_len, n_layers=n_layers)
+    model = MHLLM(vocab_size=ds_train.vocab_size)
     print('Before training:')
     print(generate_text(model, init_text, ds_val, n=n_generated, sample=True))
 

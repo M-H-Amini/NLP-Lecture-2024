@@ -1,8 +1,8 @@
 #########################################################################################
 ##                                                                                     ##
 ##                                Mohammad Hossein Amini                               ##
-##                              Title: LSTM (Single Layer)                             ##
-##                                   Date: 2024/10/18                                  ##
+##     Title: Multi-Head Attention with Layer Normalization and Residual Connection    ##
+##                                   Date: 2024/10/17                                  ##
 ##                                                                                     ##
 #########################################################################################
 
@@ -17,22 +17,72 @@ from tqdm import tqdm
 from mh_utils import train, encode_text, decode_text, generate_text
 
 
+class MHAttention(nn.Module):
+    def __init__(self, input_dim=512, head_size=512):
+        super(MHAttention, self).__init__()
+        self.input_dim = input_dim
+        self.head_size = head_size
+        self.q_layer = nn.Linear(input_dim, head_size, bias=False)
+        self.k_layer = nn.Linear(input_dim, head_size, bias=False)
+        self.v_layer = nn.Linear(input_dim, head_size, bias=False)
+        
+    def forward(self, x):
+        B, T, C = x.shape
+        q = self.q_layer(x)  ##  (B, T, H)
+        k = self.k_layer(x)  ##  (B, T, H)
+        v = self.v_layer(x)  ##  (B, T, H)
+        w = q @ k.transpose(-1, -2)  ##  (B, T, H) @ (B, H, T) = (B, T, T)
+        w = w * self.head_size**-.5
+        w = torch.tril(w)  ##  (T, T)
+        w = w.masked_fill(w == 0, float('-inf'))
+        w = F.softmax(w, dim=-1)
+        x = w @ v  ##  (T, T) @ (B, T, H) = (B, T, H)
+        return x
+    
+class MHMultiHeadAttention(nn.Module):
+    def __init__(self, input_dim=512, head_size=512, num_heads=8):
+        super(MHMultiHeadAttention, self).__init__()
+        self.heads = nn.ModuleList([MHAttention(input_dim, head_size//num_heads) for _ in range(num_heads)])
+        self.fc = nn.Linear(head_size, input_dim)
+
+    def forward(self, x):
+        x = torch.cat([head(x) for head in self.heads], dim=-1)
+        x = self.fc(x)
+        return x
+    
+class MHBlock(nn.Module):
+    def __init__(self, input_dim=512, head_size=512, num_heads=8):
+        super(MHBlock, self).__init__()
+        self.attention = MHMultiHeadAttention(input_dim, head_size, num_heads)
+        self.layer_norm = nn.LayerNorm(input_dim)
+        
+    def forward(self, x):
+        x_a = self.attention(x)  ##  (B, T, H)
+        x = x + x_a  ##  (B, T, H)  Residual connection
+        x = self.layer_norm(x)  ##  (B, T, H)
+        return x
+        
+        
 class MHLLM(nn.Module):
-    def __init__(self, input_dim=500, n_layers=1, vocab_size=100, context_len=5):
+    def __init__(self, input_dim=512, head_size=512, num_heads=8, vocab_size=100, context_len=5):
         super(MHLLM, self).__init__()
         self.input_dim = input_dim
-        self.n_layers = n_layers
+        self.head_size = head_size
+        self.num_heads = num_heads
         self.vocab_size = vocab_size
         self.context_len = context_len
-        self.embedding = nn.Embedding(vocab_size, input_dim)
-        self.lstm = nn.LSTM(input_size=input_dim, hidden_size=input_dim, num_layers=n_layers, batch_first=True)
+        self.t_embedding = nn.Embedding(vocab_size, input_dim)
+        self.p_embedding = nn.Embedding(context_len, input_dim)
+        self.block = MHBlock(input_dim, head_size, num_heads=num_heads)
         self.fc = nn.Linear(input_dim, vocab_size)
         
     def forward(self, x, y=None):
         B, T = x.shape
-        x = self.embedding(x)  ##  (B, T) -> (B, T, C)
-        x, _ = self.lstm(x)  ##  (B, T, C)
-        x = self.fc(x)  ##  (B, T, C) -> (B, T, V)
+        t_embed = self.t_embedding(x)  ##  (B, T) -> (B, T, C)
+        p_embed = self.p_embedding(torch.arange(T, device=x.device))  ##  (T,) -> (T, C)
+        x = t_embed + p_embed
+        x = self.block(x)  ##  (B, T, H)
+        x = self.fc(x)  ##  (B, T, H) -> (B, T, V)
         loss = None
         if y is not None:
             loss = F.cross_entropy(x.view(B*T, -1), y.view(-1))
@@ -54,11 +104,12 @@ class MHLLM(nn.Module):
             x = torch.cat([x, xx.unsqueeze(0)], dim=1)[:, -self.context_len:]
             resp.append(xx.item())
         return torch.tensor(resp)
-    
+
     def save(self, filepath):
         checkpoint = {
             'input_dim': self.input_dim,
-            'n_layers': self.n_layers,
+            'head_size': self.head_size,
+            'num_heads': self.num_heads,
             'vocab_size': self.vocab_size,
             'context_len': self.context_len,
             'state_dict': self.state_dict(),
@@ -72,7 +123,8 @@ class MHLLM(nn.Module):
         checkpoint = torch.load(filepath, map_location=device)
         model = cls(
             input_dim=checkpoint['input_dim'],
-            n_layers=checkpoint['n_layers'],
+            head_size=checkpoint['head_size'],
+            num_heads=checkpoint['num_heads'],
             vocab_size=checkpoint['vocab_size'],
             context_len=checkpoint['context_len']
         )
@@ -84,19 +136,21 @@ class MHLLM(nn.Module):
 if __name__ == "__main__":
     context_len = 30
     input_dim = 512
+    head_size = 512
+    num_heads = 8
     epochs = 10
     batch_size = 512
     eval_steps = 100
     lr = 1e-4
     n_generated = 100
-    model_name = 'attn_lstm'
+    model_name = 'attn_res_norm'
     init_text = 'Harry Potter'
     books = ['HP1.txt', 'HP2.txt', 'HP3.txt']
 
     ds_train = MHDataset(books, train=True, window_size=context_len, step_size=5)
     ds_val = MHDataset(books, train=False, window_size=context_len, step_size=context_len)
     
-    model = MHLLM(input_dim=input_dim, vocab_size=ds_train.vocab_size)
+    model = MHLLM(input_dim=input_dim, head_size=head_size, num_heads=num_heads, vocab_size=ds_train.vocab_size, context_len=context_len)
     print('Before training:')
     print(generate_text(model, init_text, ds_val, n=n_generated, sample=True))
 

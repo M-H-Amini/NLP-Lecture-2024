@@ -1,7 +1,7 @@
 #########################################################################################
 ##                                                                                     ##
 ##                                Mohammad Hossein Amini                               ##
-##                                      Title: MLP                                     ##
+##                              Title: LSTM (Single Layer)                             ##
 ##                                   Date: 2024/10/18                                  ##
 ##                                                                                     ##
 #########################################################################################
@@ -16,13 +16,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from mh_utils import train, encode_text, decode_text, generate_text
 
-class MHHidden(nn.Module):
-    def __init__(self, input_dim=512):
-        super(MHHidden, self).__init__()
-        self.fc = nn.Linear(input_dim, input_dim)
-        
-    def forward(self, x):
-        return F.relu(self.fc(x))
 
 class MHLLM(nn.Module):
     def __init__(self, input_dim=500, n_layers=1, vocab_size=100, context_len=5):
@@ -32,18 +25,17 @@ class MHLLM(nn.Module):
         self.vocab_size = vocab_size
         self.context_len = context_len
         self.embedding = nn.Embedding(vocab_size, input_dim)
-        self.hidden = nn.Sequential(*[MHHidden(input_dim) for _ in range(n_layers)])
-        self.fc = nn.Linear(input_dim * context_len, vocab_size)
+        self.rnn = nn.RNN(input_size=input_dim, hidden_size=input_dim, num_layers=n_layers, batch_first=True)
+        self.fc = nn.Linear(input_dim, vocab_size)
         
     def forward(self, x, y=None):
         B, T = x.shape
         x = self.embedding(x)  ##  (B, T) -> (B, T, C)
-        x = self.hidden(x)  ##  (B, T, C)
-        x = x.view(B, -1)  ##  (B, T, C) -> (B, T*C)
-        x = self.fc(x)  ##  (B, T*C) -> (B, V)
+        x, _ = self.rnn(x)  ##  (B, T, C)
+        x = self.fc(x)  ##  (B, T, C) -> (B, T, V)
         loss = None
         if y is not None:
-            loss = F.cross_entropy(x, y[:, -1])
+            loss = F.cross_entropy(x.view(B*T, -1), y.view(-1))
         return x, loss
     
     def generate(self, x_init, n=100, sample=True):
@@ -52,11 +44,9 @@ class MHLLM(nn.Module):
         resp = x.squeeze(0).tolist()
         if T > self.context_len:
             x = x[:, -self.context_len:]  ##  (1, T) -> (1, context_len)
-        if T < self.context_len:
-            x = torch.cat([torch.tensor([2] * (self.context_len - T)).unsqueeze(0), x], dim=1)  ##  (1, T) -> (1, context_len)
         for _ in range(n):  
-            xx, __ = self.forward(x)  ##  (1, T) -> (1, V)
-            xx = xx[0]  ##  (1, V) -> (V,)
+            xx, __ = self.forward(x)
+            xx = xx[0, -1, :]  ##  (1, T) -> (V,)  
             if sample:
                 xx = torch.multinomial(F.softmax(xx, dim=-1), 1)  ##  (V,) -> (1,)
             else:
@@ -92,22 +82,21 @@ class MHLLM(nn.Module):
 
     
 if __name__ == "__main__":
-    context_len = 1
+    context_len = 30
     input_dim = 512
-    n_layers = 1
     epochs = 10
     batch_size = 512
     eval_steps = 100
-    lr = 1e-3
+    lr = 1e-4
     n_generated = 100
-    model_name = 'attn_mlp_context_1'
+    model_name = 'attn_rnn'
     init_text = 'Harry Potter'
     books = ['HP1.txt', 'HP2.txt', 'HP3.txt']
 
-    ds_train = MHDataset(books, train=True, window_size=context_len, step_size=1)
+    ds_train = MHDataset(books, train=True, window_size=context_len, step_size=5)
     ds_val = MHDataset(books, train=False, window_size=context_len, step_size=context_len)
     
-    model = MHLLM(input_dim=input_dim, vocab_size=ds_train.vocab_size, context_len=context_len, n_layers=n_layers)
+    model = MHLLM(input_dim=input_dim, vocab_size=ds_train.vocab_size)
     print('Before training:')
     print(generate_text(model, init_text, ds_val, n=n_generated, sample=True))
 
